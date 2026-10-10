@@ -317,6 +317,22 @@ function buildTeamContent(session, title) {
   return lines.join("\n");
 }
 
+function buildInhouseContent(session) {
+  const lines = ["# INHOUSE", ""];
+  for (const team of TEAMS) {
+    lines.push(`# ${team}`);
+    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+      const e = session.teams[team][pos];
+      const player = e
+        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
+        : "";
+      lines.push(`> **${pos} :**${player}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
 function buildTeamComponents(prefix, sessionId) {
   const posSelect = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
@@ -451,7 +467,7 @@ async function editInhouseMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: buildTeamContent(session, "IN-HOUSE!"), embeds: [], components: buildTeamComponents("inhouse", sessionId) });
+      await msg.edit({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", sessionId) });
     }
   } catch { }
 }
@@ -497,7 +513,7 @@ async function handleInhouseCommand(interaction) {
   if (existingId) await expireInhouse(existingId, interaction.client);
   channelInhouse.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: buildTeamContent(session, "IN-HOUSE!"), embeds: [], components: buildTeamComponents("inhouse", messageId) });
+  await interaction.editReply({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", messageId) });
 }
 
 async function handleInhouseInteraction(interaction) {
