@@ -29,14 +29,14 @@ import { createServer } from "http";
 const POSITIONS        = ["CF", "RW", "LW", "CM", "GK"];
 const TEAMS            = ["HOME", "AWAY"];
 const RARITY_CHARACTERS = {
- RARE:        ["Isagi", "kurona", "Gagamaru", "Chigiri", "Raichi"],
+ RARE:        ["Isagi", "kurona", "Gagamaru", "Chigiri", "Raichi", "Igaguri"],
   EPIC:        ["Otoya", "Hirori", "Bachira", "Karasu"],
   LEGENDARY:   ["Kunigami", "Kiyora", "Aiku", "Nagi", "King"],
   MYTHIC:      ["Shidou", "Reo", "Niko", "Rin", "Charles", "Yukimiya", "Ness"],
   WORLDCLASS:  ["Sae", "Don Lorenzo", "Kaiser"],
   MASTERCLASS: ["Loki", "Lavinho"],
   LIMITEDS: [
-    "Elf Emperor", "Easter Yukimiya", "Reaper Sae", "Skeleton Nagi",
+    "Elf Emperor", "Easter Yukimiya", "Reaper Sae", "Bloodmoon Rin", "Skeleton Nagi",
     "Phantom Isagi", "Demon Shidou", "Firework Bachira",
     "Subzero Loki", "Krampus Barou",
   ],
