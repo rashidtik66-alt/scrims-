@@ -104,13 +104,16 @@ function charSelect(prefix, sessionId, position, rarity) {
 // ═══════════════════════════════════════════
 
 function buildScrimContent(session) {
-  const lines = ["# SCRIM!", ""];
-  for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+  const lines = ["# Scrim!", "**Choose your position**", ""];
+  for (const pos of POSITIONS) {
     const e = session.positions[pos];
-    const player = e
-      ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
-      : "";
-    lines.push(`> **${pos} :**${player}`);
+    if (e) {
+      const char = e.character ? ` (${e.character})` : " (Choosing character...)";
+      lines.push(`**${pos} :** <@${e.userId}>${char}`);
+    } else {
+      lines.push(`**${pos} :**`);
+    }
+    lines.push("");
   }
   return lines.join("\n");
 }
