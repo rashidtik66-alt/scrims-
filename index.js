@@ -234,8 +234,27 @@ async function scrimPosition(interaction) {
 async function scrimRarity(interaction) {
   const [, sessionId, position] = interaction.customId.split(":");
   const rarity = interaction.values[0];
-  if (!activeScrims.get(sessionId)) return interaction.update({ content: "❌ السكريم لم يعد موجوداً.", components: [] });
-  await interaction.update({ content: `فئة **${rarity}** — اختر شخصيتك:`, components: [charSelect("scrim", sessionId, position, rarity)] });
+  const session = activeScrims.get(sessionId);
+  if (!session) return interaction.update({ content: "❌ السكريم لم يعد موجوداً.", components: [] });
+  if (session.positions[position]?.userId !== interaction.user.id)
+    return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
+
+  const availableChars = (RARITY_CHARACTERS[rarity] ?? []).filter((character) =>
+    position === "GK" || !POSITIONS.some((pos) =>
+      pos !== position &&
+      session.positions[pos]?.character?.toLowerCase() === character.toLowerCase()
+    )
+  );
+  if (!availableChars.length)
+    return interaction.update({
+      content: `❌ كل شخصيات فئة **${rarity}** مستخدمة بالفعل في السكريم. اختر فئة أخرى:`,
+      components: [raritySelect("scrim", sessionId, position)],
+    });
+
+  await interaction.update({
+    content: `فئة **${rarity}** — اختر شخصيتك:`,
+    components: [charSelect("scrim", sessionId, position, rarity, availableChars)],
+  });
 }
 
 async function scrimChar(interaction) {
@@ -244,8 +263,18 @@ async function scrimChar(interaction) {
   if (!session) return interaction.update({ content: "❌ السكريم لم يعد موجوداً.", components: [] });
   if (session.positions[position]?.userId !== interaction.user.id)
     return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
-  session.positions[position].character = interaction.values[0];
-  await interaction.update({ content: `✅ اخترت **${interaction.values[0]}** في مركز **${position}**!`, components: [] });
+  const character = interaction.values[0];
+  const alreadyTaken = position !== "GK" && POSITIONS.some((pos) =>
+    pos !== position &&
+    session.positions[pos]?.character?.toLowerCase() === character.toLowerCase()
+  );
+  if (alreadyTaken)
+    return interaction.update({
+      content: `❌ الشخصية **${character}** مستخدمة بالفعل في السكريم. اختر شخصية أخرى:`,
+      components: [raritySelect("scrim", sessionId, position)],
+    });
+  session.positions[position].character = character;
+  await interaction.update({ content: `✅ اخترت **${character}** في مركز **${position}**!`, components: [] });
   await editScrimMessage(sessionId, session, interaction.client);
 }
 
@@ -396,7 +425,7 @@ async function teamRarity(interaction, store, prefix) {
     return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
 
   const availableChars = (RARITY_CHARACTERS[rarity] ?? []).filter((character) =>
-    !POSITIONS.some((pos) =>
+    position === "GK" || !POSITIONS.some((pos) =>
       pos !== position &&
       session.teams[found.team][pos]?.character?.toLowerCase() === character.toLowerCase()
     )
@@ -420,7 +449,7 @@ async function teamChar(interaction, store, editFn, title, prefix) {
   const found = findPlayerInTeams(session, interaction.user.id);
   if (!found || found.position !== position) return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
   const character = interaction.values[0];
-  const alreadyTaken = POSITIONS.some((pos) =>
+  const alreadyTaken = position !== "GK" && POSITIONS.some((pos) =>
     pos !== position &&
     session.teams[found.team][pos]?.character?.toLowerCase() === character.toLowerCase()
   );
