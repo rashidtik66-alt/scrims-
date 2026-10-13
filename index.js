@@ -56,6 +56,10 @@ const channelInhouse  = new Map(); // channelId → messageId
 const activeTryouts   = new Map(); // messageId → TryoutSession
 const channelTryout   = new Map(); // channelId → messageId
 
+const pendingSessionEdits = new Map(); // messageId → coalesced Discord message edit
+const SESSION_EDIT_DEBOUNCE_MS = 250;
+const SESSION_EDIT_MIN_INTERVAL_MS = 1000;
+
 // ─────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────
@@ -74,6 +78,74 @@ function findPlayerInTeams(session, userId) {
 
 function clearTimer(session) {
   if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+}
+
+function scheduleSessionEditFlush(messageId, queuedEdit) {
+  if (queuedEdit.timer) clearTimeout(queuedEdit.timer);
+  const rateLimitWait = Math.max(
+    0,
+    queuedEdit.lastEditAt + SESSION_EDIT_MIN_INTERVAL_MS - Date.now()
+  );
+  const delay = Math.max(SESSION_EDIT_DEBOUNCE_MS, rateLimitWait);
+  queuedEdit.timer = setTimeout(() => flushSessionEdit(messageId, queuedEdit), delay);
+  queuedEdit.timer.unref?.();
+}
+
+async function flushSessionEdit(messageId, queuedEdit) {
+  if (queuedEdit.running || pendingSessionEdits.get(messageId) !== queuedEdit) return;
+  queuedEdit.timer = null;
+  if (queuedEdit.cancelled || queuedEdit.store.get(messageId) !== queuedEdit.session) {
+    pendingSessionEdits.delete(messageId);
+    return;
+  }
+
+  queuedEdit.running = true;
+  queuedEdit.dirty = false;
+  try {
+    const channel = await queuedEdit.client.channels.fetch(queuedEdit.session.channelId);
+    if (channel?.isTextBased()) {
+      const message = await channel.messages.fetch(messageId);
+      if (!queuedEdit.cancelled && queuedEdit.store.get(messageId) === queuedEdit.session)
+        await message.edit(queuedEdit.buildPayload(queuedEdit.session));
+    }
+  } catch (error) {
+    console.error("[Bot] Failed to update an in-house/tryout message:", error);
+  } finally {
+    queuedEdit.running = false;
+    queuedEdit.lastEditAt = Date.now();
+    if (pendingSessionEdits.get(messageId) !== queuedEdit) return;
+    if (queuedEdit.cancelled || queuedEdit.store.get(messageId) !== queuedEdit.session) {
+      pendingSessionEdits.delete(messageId);
+      return;
+    }
+    if (queuedEdit.dirty) scheduleSessionEditFlush(messageId, queuedEdit);
+  }
+}
+
+function enqueueSessionEdit(messageId, session, client, store, buildPayload) {
+  let queuedEdit = pendingSessionEdits.get(messageId);
+  if (!queuedEdit) {
+    queuedEdit = {
+      session, client, store, buildPayload,
+      timer: null, running: false, dirty: false, cancelled: false, lastEditAt: 0,
+    };
+    pendingSessionEdits.set(messageId, queuedEdit);
+  }
+  queuedEdit.session = session;
+  queuedEdit.client = client;
+  queuedEdit.store = store;
+  queuedEdit.buildPayload = buildPayload;
+  queuedEdit.dirty = true;
+  if (!queuedEdit.running) scheduleSessionEditFlush(messageId, queuedEdit);
+}
+
+function cancelSessionEdit(messageId) {
+  const queuedEdit = pendingSessionEdits.get(messageId);
+  if (!queuedEdit) return;
+  queuedEdit.cancelled = true;
+  if (queuedEdit.timer) clearTimeout(queuedEdit.timer);
+  queuedEdit.timer = null;
+  pendingSessionEdits.delete(messageId);
 }
 
 // ─────────────────────────────────────────────
@@ -399,13 +471,16 @@ async function teamPosition(interaction, store, editFn, title, prefix) {
   if (!session) return interaction.reply({ content: "❌ الجلسة لم تعد موجودة.", flags: MessageFlags.Ephemeral });
   const position = interaction.values[0];
   const { id: userId, username } = interaction.user;
-  for (const t of TEAMS)
-    for (const p of POSITIONS)
-      if (session.teams[t][p]?.userId === userId) session.teams[t][p] = null;
-  const freeTeams = TEAMS.filter((t) => session.teams[t][position] === null);
+  const freeTeams = TEAMS.filter((team) =>
+    session.teams[team][position] === null ||
+    session.teams[team][position]?.userId === userId
+  );
   if (!freeTeams.length)
     return interaction.reply({ content: `❌ مركز **${position}** ممتلئ في كلا الفريقين!`, flags: MessageFlags.Ephemeral });
   const assignedTeam = freeTeams[Math.floor(Math.random() * freeTeams.length)];
+  for (const team of TEAMS)
+    for (const pos of POSITIONS)
+      if (session.teams[team][pos]?.userId === userId) session.teams[team][pos] = null;
   session.teams[assignedTeam][position] = { userId, username, character: null };
   await editFn(sessionId, session, interaction.client);
   await interaction.reply({
@@ -517,19 +592,18 @@ async function teamChangeChar(interaction, store, prefix) {
 // ═══════════════════════════════════════════
 
 async function editInhouseMessage(sessionId, session, client) {
-  try {
-    const ch = await client.channels.fetch(session.channelId);
-    if (ch?.isTextBased()) {
-      const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", sessionId) });
-    }
-  } catch { }
+  enqueueSessionEdit(sessionId, session, client, activeInhouses, (currentSession) => ({
+    content: buildInhouseContent(currentSession),
+    embeds: [],
+    components: buildTeamComponents("inhouse", sessionId),
+  }));
 }
 
 async function expireInhouse(sessionId, client) {
   const s = activeInhouses.get(sessionId);
   if (!s) return;
   clearTimer(s);
+  cancelSessionEdit(sessionId);
   activeInhouses.delete(sessionId);
   channelInhouse.delete(s.channelId);
   try {
@@ -586,19 +660,18 @@ async function handleInhouseInteraction(interaction) {
 // ═══════════════════════════════════════════
 
 async function editTryoutMessage(sessionId, session, client) {
-  try {
-    const ch = await client.channels.fetch(session.channelId);
-    if (ch?.isTextBased()) {
-      const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", sessionId) });
-    }
-  } catch { }
+  enqueueSessionEdit(sessionId, session, client, activeTryouts, (currentSession) => ({
+    content: buildTeamContent(currentSession, "TRYOUT!"),
+    embeds: [],
+    components: buildTeamComponents("tryout", sessionId),
+  }));
 }
 
 async function expireTryout(sessionId, client) {
   const s = activeTryouts.get(sessionId);
   if (!s) return;
   clearTimer(s);
+  cancelSessionEdit(sessionId);
   activeTryouts.delete(sessionId);
   channelTryout.delete(s.channelId);
   try {
