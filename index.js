@@ -339,8 +339,7 @@ function buildTeamComponents(prefix, sessionId) {
   );
   const buttons = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`${prefix}_changechar:${sessionId}`).setLabel("تغيير الشخصية").setEmoji("🔄").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`${prefix}_leave:${sessionId}`).setLabel("Leave Position").setEmoji("🚪").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${prefix}_kick:${sessionId}`).setLabel("Kick Player").setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId(`${prefix}_leave:${sessionId}`).setLabel("Leave Position").setEmoji("🚪").setStyle(ButtonStyle.Secondary)
   );
   return [posSelect, buttons];
 }
