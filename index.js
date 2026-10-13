@@ -89,8 +89,7 @@ function raritySelect(prefix, sessionId, position) {
   );
 }
 
-function charSelect(prefix, sessionId, position, rarity) {
-  const chars = RARITY_CHARACTERS[rarity] ?? [];
+function charSelect(prefix, sessionId, position, rarity, chars = RARITY_CHARACTERS[rarity] ?? []) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`${prefix}_char:${sessionId}:${position}`)
@@ -391,8 +390,28 @@ async function teamPosition(interaction, store, editFn, title, prefix) {
 async function teamRarity(interaction, store, prefix) {
   const [, sessionId, position] = interaction.customId.split(":");
   const rarity = interaction.values[0];
-  if (!store.get(sessionId)) return interaction.update({ content: "❌ الجلسة لم تعد موجودة.", components: [] });
-  await interaction.update({ content: `فئة **${rarity}** — اختر شخصيتك:`, components: [charSelect(prefix, sessionId, position, rarity)] });
+  const session = store.get(sessionId);
+  if (!session) return interaction.update({ content: "❌ الجلسة لم تعد موجودة.", components: [] });
+  const found = findPlayerInTeams(session, interaction.user.id);
+  if (!found || found.position !== position)
+    return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
+
+  const availableChars = (RARITY_CHARACTERS[rarity] ?? []).filter((character) =>
+    !POSITIONS.some((pos) =>
+      pos !== position &&
+      session.teams[found.team][pos]?.character?.toLowerCase() === character.toLowerCase()
+    )
+  );
+  if (!availableChars.length)
+    return interaction.update({
+      content: `❌ كل شخصيات فئة **${rarity}** مستخدمة بالفعل في فريق **${found.team}**. اختر فئة أخرى:`,
+      components: [raritySelect(prefix, sessionId, position)],
+    });
+
+  await interaction.update({
+    content: `فئة **${rarity}** — اختر شخصيتك:`,
+    components: [charSelect(prefix, sessionId, position, rarity, availableChars)],
+  });
 }
 
 async function teamChar(interaction, store, editFn, title, prefix) {
@@ -402,6 +421,15 @@ async function teamChar(interaction, store, editFn, title, prefix) {
   const found = findPlayerInTeams(session, interaction.user.id);
   if (!found || found.position !== position) return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
   const character = interaction.values[0];
+  const alreadyTaken = POSITIONS.some((pos) =>
+    pos !== position &&
+    session.teams[found.team][pos]?.character?.toLowerCase() === character.toLowerCase()
+  );
+  if (alreadyTaken)
+    return interaction.update({
+      content: `❌ الشخصية **${character}** مستخدمة بالفعل في فريق **${found.team}**. اختر شخصية أخرى:`,
+      components: [raritySelect(prefix, sessionId, position)],
+    });
   session.teams[found.team][position].character = character;
   await interaction.update({ content: `✅ اخترت **${character}** في **${found.team} - ${position}**!`, components: [] });
   await editFn(sessionId, session, interaction.client);
