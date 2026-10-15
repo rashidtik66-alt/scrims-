@@ -14,7 +14,6 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  EmbedBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -27,9 +26,8 @@ import { createServer } from "http";
 // Constants
 // ─────────────────────────────────────────────
 
-const POSITIONS        = ["CF", "LW", "RW", "CM", "GK"];
+const POSITIONS        = ["CF", "RW", "LW", "CM", "GK"];
 const TEAMS            = ["HOME", "AWAY"];
-const POSITION_EMOJIS  = { CF: "🎯", LW: "⚡", RW: "⚡", CM: "⚽", GK: "🧤" };
 const RARITY_CHARACTERS = {
  RARE:        ["Isagi", "kurona", "Gagamaru", "Chigiri", "Raichi", "Igaguri"],
   EPIC:        ["Otoya", "Hirori", "Bachira", "Karasu"],
@@ -104,24 +102,19 @@ function charSelect(prefix, sessionId, position, rarity, chars = RARITY_CHARACTE
 //  SCRIM
 // ═══════════════════════════════════════════
 
-function formatPosition(pos, entry) {
-  const player = entry
-    ? `<@${entry.userId}> · ${entry.character ?? "يختار الشخصية"}`
-    : "— متاح";
-  return `${POSITION_EMOJIS[pos]} **${pos}:** ${player}`;
-}
-
-function buildScrimEmbed(session) {
-  const playerCount = POSITIONS.filter((pos) => session.positions[pos] !== null).length;
-  return new EmbedBuilder()
-    .setColor(0x2563eb)
-    .setTitle("⚽ SCRIM")
-    .setDescription("اختر مركزك من القائمة أدناه، ثم اختر شخصيتك.")
-    .addFields({
-      name: "🔵 SCRIM · المراكز",
-      value: POSITIONS.map((pos) => formatPosition(pos, session.positions[pos])).join("\n"),
-    })
-    .setFooter({ text: `Players: ${playerCount}/5 · الحد الأقصى 5 لاعبين` });
+function buildScrimContent(session) {
+  const lines = ["# Scrim!", "**Choose your position**", ""];
+  for (const pos of POSITIONS) {
+    const e = session.positions[pos];
+    if (e) {
+      const char = e.character ? ` (${e.character})` : " (Choosing character...)";
+      lines.push(`**${pos} :** <@${e.userId}>${char}`);
+    } else {
+      lines.push(`**${pos} :**`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }
 
 function buildScrimComponents(sessionId, session) {
@@ -158,7 +151,7 @@ async function editScrimMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: "", embeds: [buildScrimEmbed(session)], components: buildScrimComponents(sessionId, session) });
+      await msg.edit({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(sessionId, session) });
     }
   } catch { }
 }
@@ -173,10 +166,7 @@ async function expireScrim(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const endedEmbed = msg.embeds[0]
-        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى السكريم · Players محفوظون" })
-        : buildScrimEmbed(s).setFooter({ text: "انتهى السكريم" });
-      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
+      await msg.edit({ content: msg.content + "\n\n**Scrim has ended**", components: [] });
     }
   } catch { }
 }
@@ -208,7 +198,7 @@ async function handleScrimCommand(interaction) {
   if (existingId) await expireScrim(existingId, interaction.client);
   channelScrim.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: "", embeds: [buildScrimEmbed(session)], components: buildScrimComponents(messageId, session) });
+  await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId, session) });
 }
 
 async function handleScrimInteraction(interaction) {
@@ -228,10 +218,10 @@ async function scrimPosition(interaction) {
   if (!session) return interaction.reply({ content: "❌ هذا السكريم لم يعد موجوداً.", flags: MessageFlags.Ephemeral });
   const position = interaction.values[0];
   const { id: userId, username } = interaction.user;
-  const currentPosition = POSITIONS.find((pos) => session.positions[pos]?.userId === userId);
-  if (session.positions[position] !== null && session.positions[position]?.userId !== userId)
+  for (const pos of POSITIONS)
+    if (session.positions[pos]?.userId === userId) session.positions[pos] = null;
+  if (session.positions[position] !== null)
     return interaction.reply({ content: `❌ مركز **${position}** محجوز بالفعل!`, flags: MessageFlags.Ephemeral });
-  if (currentPosition && currentPosition !== position) session.positions[currentPosition] = null;
   session.positions[position] = { userId, username, character: null };
   await editScrimMessage(sessionId, session, interaction.client);
   await interaction.reply({
@@ -308,27 +298,36 @@ async function scrimChangeChar(interaction) {
 //  Shared team content/components (Inhouse & Tryout)
 // ═══════════════════════════════════════════
 
-function buildTeamEmbed(session, title) {
-  const teamFields = TEAMS.map((team) => {
-    const players = POSITIONS
-      .map((pos) => formatPosition(pos, session.teams[team][pos]))
-      .join("\n");
-    return {
-      name: team === "HOME" ? "🔵 HOME" : "🟣 AWAY",
-      value: players,
-      inline: true,
-    };
-  });
-  const playerCount = TEAMS.reduce(
-    (total, team) => total + POSITIONS.filter((pos) => session.teams[team][pos] !== null).length,
-    0,
-  );
-  return new EmbedBuilder()
-    .setColor(title.toUpperCase().includes("TRYOUT") ? 0x7c3aed : 0x2563eb)
-    .setTitle(title.toUpperCase().includes("TRYOUT") ? "🎯 TRYOUT" : "🏆 INHOUSE")
-    .setDescription("اختر مركزك من القائمة، وسيتم توزيعك عشوائياً على HOME أو AWAY.")
-    .addFields(teamFields)
-    .setFooter({ text: `Players: ${playerCount}/10 · 5 لاعبين لكل فريق` });
+function buildTeamContent(session, title) {
+  const lines = [`# ${title}`, ""];
+  for (const team of TEAMS) {
+    lines.push(`# ${team}`);
+    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+      const e = session.teams[team][pos];
+      const player = e
+        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
+        : "";
+      lines.push(`> **${pos} :**${player}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function buildInhouseContent(session) {
+  const lines = ["# INHOUSE", ""];
+  for (const team of TEAMS) {
+    lines.push(`# ${team}`);
+    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+      const e = session.teams[team][pos];
+      const player = e
+        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
+        : "";
+      lines.push(`> **${pos} :**${player}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }
 
 function buildTeamComponents(prefix, sessionId) {
@@ -493,7 +492,7 @@ async function editInhouseMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: "", embeds: [buildTeamEmbed(session, "INHOUSE")], components: buildTeamComponents("inhouse", sessionId) });
+      await msg.edit({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", sessionId) });
     }
   } catch { }
 }
@@ -508,10 +507,7 @@ async function expireInhouse(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const endedEmbed = msg.embeds[0]
-        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى الإن-هاوس" })
-        : buildTeamEmbed(s, "INHOUSE").setFooter({ text: "انتهى الإن-هاوس" });
-      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
+      await msg.edit({ content: msg.content + "\n\n**In-house has ended**", components: [] });
     }
   } catch { }
 }
@@ -542,7 +538,7 @@ async function handleInhouseCommand(interaction) {
   if (existingId) await expireInhouse(existingId, interaction.client);
   channelInhouse.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: "", embeds: [buildTeamEmbed(session, "INHOUSE")], components: buildTeamComponents("inhouse", messageId) });
+  await interaction.editReply({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", messageId) });
 }
 
 async function handleInhouseInteraction(interaction) {
@@ -565,7 +561,7 @@ async function editTryoutMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: "", embeds: [buildTeamEmbed(session, "TRYOUT")], components: buildTeamComponents("tryout", sessionId) });
+      await msg.edit({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", sessionId) });
     }
   } catch { }
 }
@@ -580,10 +576,7 @@ async function expireTryout(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const endedEmbed = msg.embeds[0]
-        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى الـ Tryout" })
-        : buildTeamEmbed(s, "TRYOUT").setFooter({ text: "انتهى الـ Tryout" });
-      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
+      await msg.edit({ content: msg.content + "\n\n**Tryout has ended**", components: [] });
     }
   } catch { }
 }
@@ -614,7 +607,7 @@ async function handleTryoutCommand(interaction) {
   if (existingId) await expireTryout(existingId, interaction.client);
   channelTryout.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: "", embeds: [buildTeamEmbed(session, "TRYOUT")], components: buildTeamComponents("tryout", messageId) });
+  await interaction.editReply({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", messageId) });
 }
 
 async function handleTryoutInteraction(interaction) {
