@@ -5,8 +5,6 @@
 // Required env vars:
 //   DISCORD_TOKEN      — bot token
 //   DISCORD_CLIENT_ID  — application / client ID
-// Additional package:
-//   npm install @napi-rs/canvas
 // ============================================================
 
 import {
@@ -16,22 +14,19 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  AttachmentBuilder,
-  EmbedBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
 } from "discord.js";
-import { createCanvas } from "@napi-rs/canvas";
 import { createServer } from "http";
 
 // ─────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────
 
-const POSITIONS        = ["CF", "LW", "RW", "CM", "GK"];
+const POSITIONS        = ["CF", "RW", "LW", "CM", "GK"];
 const TEAMS            = ["HOME", "AWAY"];
 const RARITY_CHARACTERS = {
  RARE:        ["Isagi", "kurona", "Gagamaru", "Chigiri", "Raichi", "Igaguri"],
@@ -107,180 +102,19 @@ function charSelect(prefix, sessionId, position, rarity, chars = RARITY_CHARACTE
 //  SCRIM
 // ═══════════════════════════════════════════
 
-function roundedRect(ctx, x, y, width, height, radius, fill, stroke, lineWidth = 1) {
-  const r = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + width - r, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
-  ctx.lineTo(x + width, y + height - r);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-  ctx.lineTo(x + r, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-  if (fill) {
-    ctx.fillStyle = fill;
-    ctx.fill();
-  }
-  if (stroke) {
-    ctx.strokeStyle = stroke;
-    ctx.lineWidth = lineWidth;
-    ctx.stroke();
-  }
-}
-
-function drawFitText(ctx, text, x, y, maxWidth, font, color) {
-  let value = String(text ?? "");
-  ctx.font = font;
-  while (value.length > 4 && ctx.measureText(value).width > maxWidth)
-    value = `${value.slice(0, -2)}…`;
-  ctx.fillStyle = color;
-  ctx.fillText(value, x, y);
-}
-
-function drawCrown(ctx, x, y, color) {
-  ctx.beginPath();
-  ctx.moveTo(x, y + 30);
-  ctx.lineTo(x + 4, y + 7);
-  ctx.lineTo(x + 19, y + 20);
-  ctx.lineTo(x + 31, y);
-  ctx.lineTo(x + 43, y + 20);
-  ctx.lineTo(x + 58, y + 7);
-  ctx.lineTo(x + 62, y + 30);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.strokeStyle = "#bdeaff";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-}
-
-function drawPositionPanel(ctx, name, entries, y, accent, panelHeight = 500) {
-  const x = 54;
-  const width = 852;
-  const count = POSITIONS.filter((pos) => entries[pos] !== null).length;
-  roundedRect(ctx, x, y, width, panelHeight, 24, "#080e1b", accent, 2);
-  roundedRect(ctx, x, y + 15, 8, panelHeight - 30, 4, accent);
-  roundedRect(ctx, x + 24, y + 19, width - 48, 62, 15, "#0d1729", `${accent}88`, 1);
-
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.arc(x + 54, y + 50, 10, 0, Math.PI * 2);
-  ctx.fill();
-  drawFitText(ctx, name, x + 78, y + 59, 420, "bold 30px Arial", "#f2f7ff");
-
-  const badgeText = `${count}/5 PLAYERS`;
-  roundedRect(ctx, x + width - 205, y + 31, 160, 38, 18, `${accent}22`, `${accent}aa`, 1);
-  drawFitText(ctx, badgeText, x + width - 188, y + 57, 130, "bold 16px Arial", accent);
-
-  POSITIONS.forEach((pos, index) => {
-    const entry = entries[pos];
-    const rowY = y + 96 + index * 72;
-    roundedRect(ctx, x + 24, rowY, width - 48, 62, 13, "#0b1322", "#18243a", 1);
-    roundedRect(ctx, x + 38, rowY + 10, 58, 42, 12, `${accent}22`, `${accent}88`, 1);
-    drawFitText(ctx, pos, x + 49, rowY + 38, 40, "bold 17px Arial", accent);
-
-    if (entry) {
-      drawFitText(ctx, entry.username || "Player", x + 112, rowY + 27, 510, "bold 20px Arial", "#edf4ff");
-      drawFitText(ctx, entry.character || "Choosing character…", x + 112, rowY + 49, 510, "15px Arial", "#8fa1bd");
-      drawFitText(ctx, "JOINED", x + width - 125, rowY + 37, 80, "bold 13px Arial", accent);
+function buildScrimContent(session) {
+  const lines = ["# Scrim!", "**Choose your position**", ""];
+  for (const pos of POSITIONS) {
+    const e = session.positions[pos];
+    if (e) {
+      const char = e.character ? ` (${e.character})` : " (Choosing character...)";
+      lines.push(`**${pos} :** <@${e.userId}>${char}`);
     } else {
-      drawFitText(ctx, "Position available", x + 112, rowY + 27, 510, "bold 18px Arial", "#aebbd0");
-      drawFitText(ctx, "Select this role below", x + 112, rowY + 49, 510, "14px Arial", "#71819a");
-      drawFitText(ctx, "OPEN", x + width - 112, rowY + 37, 70, "bold 13px Arial", "#8290a5");
+      lines.push(`**${pos} :**`);
     }
-  });
-}
-
-async function buildBoardCard(session, mode, title) {
-  const isScrim = mode === "scrim";
-  const width = 960;
-  const height = isScrim ? 900 : 1430;
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-  const background = ctx.createLinearGradient(0, 0, width, height);
-  background.addColorStop(0, "#050914");
-  background.addColorStop(0.52, "#091326");
-  background.addColorStop(1, "#08091a");
-  ctx.fillStyle = background;
-  ctx.fillRect(0, 0, width, height);
-
-  const blueGlow = ctx.createRadialGradient(80, 250, 10, 80, 250, 420);
-  blueGlow.addColorStop(0, "rgba(0,145,255,0.17)");
-  blueGlow.addColorStop(1, "rgba(0,145,255,0)");
-  ctx.fillStyle = blueGlow;
-  ctx.fillRect(0, 0, width, height);
-  const purpleGlow = ctx.createRadialGradient(900, 880, 10, 900, 880, 440);
-  purpleGlow.addColorStop(0, "rgba(139,57,255,0.13)");
-  purpleGlow.addColorStop(1, "rgba(139,57,255,0)");
-  ctx.fillStyle = purpleGlow;
-  ctx.fillRect(0, 0, width, height);
-
-  roundedRect(ctx, 22, 22, width - 44, height - 44, 28, "rgba(5,10,22,0.34)", "#172846", 2);
-  drawCrown(ctx, 52, 45, "#39c8ff");
-  drawFitText(ctx, "Reno | Scrim System", 132, 68, 500, "bold 28px Arial", "#f5f8ff");
-  drawFitText(ctx, "Fully Automated · Ready 24/7", 132, 96, 500, "16px Arial", "#9fb0cb");
-  roundedRect(ctx, 753, 48, 153, 42, 20, "#09251f", "#13d49b", 1);
-  ctx.beginPath();
-  ctx.arc(775, 69, 6, 0, Math.PI * 2);
-  ctx.fillStyle = "#13d49b";
-  ctx.fill();
-  drawFitText(ctx, "ONLINE", 791, 75, 96, "bold 16px Arial", "#41edbd");
-
-  const banner = ctx.createLinearGradient(52, 120, 908, 220);
-  banner.addColorStop(0, "#071c38");
-  banner.addColorStop(0.55, "#102752");
-  banner.addColorStop(1, "#17123b");
-  roundedRect(ctx, 52, 124, 856, 112, 20, banner, "#178cff", 2);
-  drawCrown(ctx, 78, 155, "#45cfff");
-  drawFitText(ctx, title, 165, 178, 570, "bold 38px Arial", "#f5f8ff");
-  drawFitText(
-    ctx,
-    isScrim ? "5-player lineup · Select a position below" : "Team lineup · Select a position below",
-    165,
-    207,
-    620,
-    "16px Arial",
-    "#b6c9e6",
-  );
-
-  if (isScrim) {
-    drawPositionPanel(ctx, "SCRIM", session.positions, 270, "#26bfff");
-  } else {
-    drawPositionPanel(ctx, "HOME", session.teams.HOME, 265, "#269cff");
-    drawPositionPanel(ctx, "AWAY", session.teams.AWAY, 795, "#a65cff");
+    lines.push("");
   }
-
-  const playerCount = isScrim
-    ? POSITIONS.filter((pos) => session.positions[pos] !== null).length
-    : TEAMS.reduce(
-        (total, team) => total + POSITIONS.filter((pos) => session.teams[team][pos] !== null).length,
-        0,
-      );
-  const maxPlayers = isScrim ? 5 : 10;
-  drawFitText(
-    ctx,
-    `${playerCount}/${maxPlayers} PLAYERS · ${isScrim ? "SCRIM IS LIMITED TO 5 PLAYERS" : "5 PLAYERS PER TEAM"}`,
-    58,
-    height - 49,
-    844,
-    "bold 16px Arial",
-    "#9fb2cf",
-  );
-
-  const fileName = `${mode}-${session.messageId || session.channelId}-${Date.now()}.png`;
-  const attachment = new AttachmentBuilder(canvas.toBuffer("image/png"), { name: fileName });
-  const embed = new EmbedBuilder()
-    .setColor(isScrim ? 0x168ff2 : mode === "tryout" ? 0x8a4dff : 0x168ff2)
-    .setImage(`attachment://${fileName}`)
-    .setFooter({ text: `${playerCount}/${maxPlayers} players · اختر مركزك من القائمة أدناه` });
-  return { embed, attachment };
-}
-
-function buildScrimCard(session) {
-  return buildBoardCard(session, "scrim", "SCRIM");
+  return lines.join("\n");
 }
 
 function buildScrimComponents(sessionId, session) {
@@ -317,14 +151,7 @@ async function editScrimMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const card = await buildScrimCard(session);
-      await msg.edit({
-        content: "",
-        embeds: [card.embed],
-        files: [card.attachment],
-        attachments: [],
-        components: buildScrimComponents(sessionId, session),
-      });
+      await msg.edit({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(sessionId, session) });
     }
   } catch { }
 }
@@ -339,10 +166,7 @@ async function expireScrim(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const endedEmbed = msg.embeds[0]
-        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى السكريم · Players محفوظون" })
-        : new EmbedBuilder().setColor(0x2563eb).setTitle("SCRIM").setDescription("انتهى السكريم.");
-      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
+      await msg.edit({ content: msg.content + "\n\n**Scrim has ended**", components: [] });
     }
   } catch { }
 }
@@ -374,14 +198,7 @@ async function handleScrimCommand(interaction) {
   if (existingId) await expireScrim(existingId, interaction.client);
   channelScrim.set(interaction.channelId, messageId);
 
-  const card = await buildScrimCard(session);
-  await interaction.editReply({
-    content: "",
-    embeds: [card.embed],
-    files: [card.attachment],
-    attachments: [],
-    components: buildScrimComponents(messageId, session),
-  });
+  await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId, session) });
 }
 
 async function handleScrimInteraction(interaction) {
@@ -401,10 +218,10 @@ async function scrimPosition(interaction) {
   if (!session) return interaction.reply({ content: "❌ هذا السكريم لم يعد موجوداً.", flags: MessageFlags.Ephemeral });
   const position = interaction.values[0];
   const { id: userId, username } = interaction.user;
-  const currentPosition = POSITIONS.find((pos) => session.positions[pos]?.userId === userId);
-  if (session.positions[position] !== null && session.positions[position]?.userId !== userId)
+  for (const pos of POSITIONS)
+    if (session.positions[pos]?.userId === userId) session.positions[pos] = null;
+  if (session.positions[position] !== null)
     return interaction.reply({ content: `❌ مركز **${position}** محجوز بالفعل!`, flags: MessageFlags.Ephemeral });
-  if (currentPosition && currentPosition !== position) session.positions[currentPosition] = null;
   session.positions[position] = { userId, username, character: null };
   await editScrimMessage(sessionId, session, interaction.client);
   await interaction.reply({
@@ -481,9 +298,36 @@ async function scrimChangeChar(interaction) {
 //  Shared team content/components (Inhouse & Tryout)
 // ═══════════════════════════════════════════
 
-function buildTeamCard(session, title) {
-  const mode = title.toUpperCase().includes("TRYOUT") ? "tryout" : "inhouse";
-  return buildBoardCard(session, mode, mode === "tryout" ? "TRYOUT" : "INHOUSE");
+function buildTeamContent(session, title) {
+  const lines = [`# ${title}`, ""];
+  for (const team of TEAMS) {
+    lines.push(`# ${team}`);
+    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+      const e = session.teams[team][pos];
+      const player = e
+        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
+        : "";
+      lines.push(`> **${pos} :**${player}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function buildInhouseContent(session) {
+  const lines = ["# INHOUSE", ""];
+  for (const team of TEAMS) {
+    lines.push(`# ${team}`);
+    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+      const e = session.teams[team][pos];
+      const player = e
+        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
+        : "";
+      lines.push(`> **${pos} :**${player}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }
 
 function buildTeamComponents(prefix, sessionId) {
@@ -648,14 +492,7 @@ async function editInhouseMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const card = await buildTeamCard(session, "INHOUSE");
-      await msg.edit({
-        content: "",
-        embeds: [card.embed],
-        files: [card.attachment],
-        attachments: [],
-        components: buildTeamComponents("inhouse", sessionId),
-      });
+      await msg.edit({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", sessionId) });
     }
   } catch { }
 }
@@ -670,10 +507,7 @@ async function expireInhouse(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const endedEmbed = msg.embeds[0]
-        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى الإن-هاوس" })
-        : new EmbedBuilder().setColor(0x2563eb).setTitle("INHOUSE").setDescription("انتهى الإن-هاوس.");
-      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
+      await msg.edit({ content: msg.content + "\n\n**In-house has ended**", components: [] });
     }
   } catch { }
 }
@@ -704,14 +538,7 @@ async function handleInhouseCommand(interaction) {
   if (existingId) await expireInhouse(existingId, interaction.client);
   channelInhouse.set(interaction.channelId, messageId);
 
-  const card = await buildTeamCard(session, "INHOUSE");
-  await interaction.editReply({
-    content: "",
-    embeds: [card.embed],
-    files: [card.attachment],
-    attachments: [],
-    components: buildTeamComponents("inhouse", messageId),
-  });
+  await interaction.editReply({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", messageId) });
 }
 
 async function handleInhouseInteraction(interaction) {
@@ -734,14 +561,7 @@ async function editTryoutMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const card = await buildTeamCard(session, "TRYOUT");
-      await msg.edit({
-        content: "",
-        embeds: [card.embed],
-        files: [card.attachment],
-        attachments: [],
-        components: buildTeamComponents("tryout", sessionId),
-      });
+      await msg.edit({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", sessionId) });
     }
   } catch { }
 }
@@ -756,10 +576,7 @@ async function expireTryout(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      const endedEmbed = msg.embeds[0]
-        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى الـ Tryout" })
-        : new EmbedBuilder().setColor(0x7c3aed).setTitle("TRYOUT").setDescription("انتهى الـ Tryout.");
-      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
+      await msg.edit({ content: msg.content + "\n\n**Tryout has ended**", components: [] });
     }
   } catch { }
 }
@@ -790,14 +607,7 @@ async function handleTryoutCommand(interaction) {
   if (existingId) await expireTryout(existingId, interaction.client);
   channelTryout.set(interaction.channelId, messageId);
 
-  const card = await buildTeamCard(session, "TRYOUT");
-  await interaction.editReply({
-    content: "",
-    embeds: [card.embed],
-    files: [card.attachment],
-    attachments: [],
-    components: buildTeamComponents("tryout", messageId),
-  });
+  await interaction.editReply({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", messageId) });
 }
 
 async function handleTryoutInteraction(interaction) {
