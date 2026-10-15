@@ -14,6 +14,7 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  EmbedBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -314,20 +315,37 @@ function buildTeamContent(session, title) {
   return lines.join("\n");
 }
 
-function buildInhouseContent(session) {
-  const lines = ["# INHOUSE", ""];
-  for (const team of TEAMS) {
-    lines.push(`# ${team}`);
-    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
+function buildInhouseEmbed(session, ended = false) {
+  const teamField = (team) => {
+    const players = ["CF", "LW", "RW", "CM", "GK"];
+    const filled = players.filter((pos) => session.teams[team][pos] !== null).length;
+    const lines = players.map((pos) => {
       const e = session.teams[team][pos];
       const player = e
-        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
-        : "";
-      lines.push(`> **${pos} :**${player}`);
-    }
-    lines.push("");
-  }
-  return lines.join("\n");
+        ? `<@${e.userId}>${e.character ? `  ·  **${e.character}**` : "  ·  *Choosing character...*"}`
+        : "*— Vacant —*";
+      return `\`${pos}\`  ${player}`;
+    });
+
+    return {
+      name: `${team === "HOME" ? "🔵" : "🟣"}  ${team}  ·  ${filled}/5 PLAYERS`,
+      value: lines.join("\n"),
+      inline: true
+    };
+  };
+
+  return new EmbedBuilder()
+    .setColor(ended ? 0x747b8b : 0x3478f6)
+    .setAuthor({ name: "RENO  •  SCRIM SYSTEM" })
+    .setTitle(ended ? "INHOUSE  ·  ENDED" : "⚔️  INHOUSE MATCHMAKING")
+    .setDescription(
+      ended
+        ? "This in-house session has ended."
+        : "Choose your position from the menu below.\n━━━━━━━━━━━━━━━━━━━━"
+    )
+    .addFields(teamField("HOME"), teamField("AWAY"))
+    .setFooter({ text: "Reno Scrim System  •  Play fair, play together" })
+    .setTimestamp();
 }
 
 function buildTeamComponents(prefix, sessionId) {
@@ -492,7 +510,7 @@ async function editInhouseMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", sessionId) });
+      await msg.edit({ content: null, embeds: [buildInhouseEmbed(session)], components: buildTeamComponents("inhouse", sessionId) });
     }
   } catch { }
 }
@@ -507,7 +525,7 @@ async function expireInhouse(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: msg.content + "\n\n**In-house has ended**", components: [] });
+      await msg.edit({ content: null, embeds: [buildInhouseEmbed(s, true)], components: [] });
     }
   } catch { }
 }
@@ -538,7 +556,7 @@ async function handleInhouseCommand(interaction) {
   if (existingId) await expireInhouse(existingId, interaction.client);
   channelInhouse.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", messageId) });
+  await interaction.editReply({ content: null, embeds: [buildInhouseEmbed(session)], components: buildTeamComponents("inhouse", messageId) });
 }
 
 async function handleInhouseInteraction(interaction) {
