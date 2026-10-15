@@ -14,6 +14,7 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  EmbedBuilder,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
@@ -26,8 +27,9 @@ import { createServer } from "http";
 // Constants
 // ─────────────────────────────────────────────
 
-const POSITIONS        = ["CF", "RW", "LW", "CM", "GK"];
+const POSITIONS        = ["CF", "LW", "RW", "CM", "GK"];
 const TEAMS            = ["HOME", "AWAY"];
+const POSITION_EMOJIS  = { CF: "🎯", LW: "⚡", RW: "⚡", CM: "⚽", GK: "🧤" };
 const RARITY_CHARACTERS = {
  RARE:        ["Isagi", "kurona", "Gagamaru", "Chigiri", "Raichi", "Igaguri"],
   EPIC:        ["Otoya", "Hirori", "Bachira", "Karasu"],
@@ -56,10 +58,6 @@ const channelInhouse  = new Map(); // channelId → messageId
 const activeTryouts   = new Map(); // messageId → TryoutSession
 const channelTryout   = new Map(); // channelId → messageId
 
-const pendingSessionEdits = new Map(); // messageId → coalesced Discord message edit
-const SESSION_EDIT_DEBOUNCE_MS = 250;
-const SESSION_EDIT_MIN_INTERVAL_MS = 1000;
-
 // ─────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────
@@ -78,74 +76,6 @@ function findPlayerInTeams(session, userId) {
 
 function clearTimer(session) {
   if (session.timer) { clearTimeout(session.timer); session.timer = null; }
-}
-
-function scheduleSessionEditFlush(messageId, queuedEdit) {
-  if (queuedEdit.timer) clearTimeout(queuedEdit.timer);
-  const rateLimitWait = Math.max(
-    0,
-    queuedEdit.lastEditAt + SESSION_EDIT_MIN_INTERVAL_MS - Date.now()
-  );
-  const delay = Math.max(SESSION_EDIT_DEBOUNCE_MS, rateLimitWait);
-  queuedEdit.timer = setTimeout(() => flushSessionEdit(messageId, queuedEdit), delay);
-  queuedEdit.timer.unref?.();
-}
-
-async function flushSessionEdit(messageId, queuedEdit) {
-  if (queuedEdit.running || pendingSessionEdits.get(messageId) !== queuedEdit) return;
-  queuedEdit.timer = null;
-  if (queuedEdit.cancelled || queuedEdit.store.get(messageId) !== queuedEdit.session) {
-    pendingSessionEdits.delete(messageId);
-    return;
-  }
-
-  queuedEdit.running = true;
-  queuedEdit.dirty = false;
-  try {
-    const channel = await queuedEdit.client.channels.fetch(queuedEdit.session.channelId);
-    if (channel?.isTextBased()) {
-      const message = await channel.messages.fetch(messageId);
-      if (!queuedEdit.cancelled && queuedEdit.store.get(messageId) === queuedEdit.session)
-        await message.edit(queuedEdit.buildPayload(queuedEdit.session));
-    }
-  } catch (error) {
-    console.error("[Bot] Failed to update an in-house/tryout message:", error);
-  } finally {
-    queuedEdit.running = false;
-    queuedEdit.lastEditAt = Date.now();
-    if (pendingSessionEdits.get(messageId) !== queuedEdit) return;
-    if (queuedEdit.cancelled || queuedEdit.store.get(messageId) !== queuedEdit.session) {
-      pendingSessionEdits.delete(messageId);
-      return;
-    }
-    if (queuedEdit.dirty) scheduleSessionEditFlush(messageId, queuedEdit);
-  }
-}
-
-function enqueueSessionEdit(messageId, session, client, store, buildPayload) {
-  let queuedEdit = pendingSessionEdits.get(messageId);
-  if (!queuedEdit) {
-    queuedEdit = {
-      session, client, store, buildPayload,
-      timer: null, running: false, dirty: false, cancelled: false, lastEditAt: 0,
-    };
-    pendingSessionEdits.set(messageId, queuedEdit);
-  }
-  queuedEdit.session = session;
-  queuedEdit.client = client;
-  queuedEdit.store = store;
-  queuedEdit.buildPayload = buildPayload;
-  queuedEdit.dirty = true;
-  if (!queuedEdit.running) scheduleSessionEditFlush(messageId, queuedEdit);
-}
-
-function cancelSessionEdit(messageId) {
-  const queuedEdit = pendingSessionEdits.get(messageId);
-  if (!queuedEdit) return;
-  queuedEdit.cancelled = true;
-  if (queuedEdit.timer) clearTimeout(queuedEdit.timer);
-  queuedEdit.timer = null;
-  pendingSessionEdits.delete(messageId);
 }
 
 // ─────────────────────────────────────────────
@@ -174,19 +104,24 @@ function charSelect(prefix, sessionId, position, rarity, chars = RARITY_CHARACTE
 //  SCRIM
 // ═══════════════════════════════════════════
 
-function buildScrimContent(session) {
-  const lines = ["# Scrim!", "**Choose your position**", ""];
-  for (const pos of POSITIONS) {
-    const e = session.positions[pos];
-    if (e) {
-      const char = e.character ? ` (${e.character})` : " (Choosing character...)";
-      lines.push(`**${pos} :** <@${e.userId}>${char}`);
-    } else {
-      lines.push(`**${pos} :**`);
-    }
-    lines.push("");
-  }
-  return lines.join("\n");
+function formatPosition(pos, entry) {
+  const player = entry
+    ? `<@${entry.userId}> · ${entry.character ?? "يختار الشخصية"}`
+    : "— متاح";
+  return `${POSITION_EMOJIS[pos]} **${pos}:** ${player}`;
+}
+
+function buildScrimEmbed(session) {
+  const playerCount = POSITIONS.filter((pos) => session.positions[pos] !== null).length;
+  return new EmbedBuilder()
+    .setColor(0x2563eb)
+    .setTitle("⚽ SCRIM")
+    .setDescription("اختر مركزك من القائمة أدناه، ثم اختر شخصيتك.")
+    .addFields({
+      name: "🔵 SCRIM · المراكز",
+      value: POSITIONS.map((pos) => formatPosition(pos, session.positions[pos])).join("\n"),
+    })
+    .setFooter({ text: `Players: ${playerCount}/5 · الحد الأقصى 5 لاعبين` });
 }
 
 function buildScrimComponents(sessionId, session) {
@@ -223,7 +158,7 @@ async function editScrimMessage(sessionId, session, client) {
     const ch = await client.channels.fetch(session.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(sessionId, session) });
+      await msg.edit({ content: "", embeds: [buildScrimEmbed(session)], components: buildScrimComponents(sessionId, session) });
     }
   } catch { }
 }
@@ -238,7 +173,10 @@ async function expireScrim(sessionId, client) {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: msg.content + "\n\n**Scrim has ended**", components: [] });
+      const endedEmbed = msg.embeds[0]
+        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى السكريم · Players محفوظون" })
+        : buildScrimEmbed(s).setFooter({ text: "انتهى السكريم" });
+      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
     }
   } catch { }
 }
@@ -270,7 +208,7 @@ async function handleScrimCommand(interaction) {
   if (existingId) await expireScrim(existingId, interaction.client);
   channelScrim.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: buildScrimContent(session), embeds: [], components: buildScrimComponents(messageId, session) });
+  await interaction.editReply({ content: "", embeds: [buildScrimEmbed(session)], components: buildScrimComponents(messageId, session) });
 }
 
 async function handleScrimInteraction(interaction) {
@@ -290,10 +228,10 @@ async function scrimPosition(interaction) {
   if (!session) return interaction.reply({ content: "❌ هذا السكريم لم يعد موجوداً.", flags: MessageFlags.Ephemeral });
   const position = interaction.values[0];
   const { id: userId, username } = interaction.user;
-  for (const pos of POSITIONS)
-    if (session.positions[pos]?.userId === userId) session.positions[pos] = null;
-  if (session.positions[position] !== null)
+  const currentPosition = POSITIONS.find((pos) => session.positions[pos]?.userId === userId);
+  if (session.positions[position] !== null && session.positions[position]?.userId !== userId)
     return interaction.reply({ content: `❌ مركز **${position}** محجوز بالفعل!`, flags: MessageFlags.Ephemeral });
+  if (currentPosition && currentPosition !== position) session.positions[currentPosition] = null;
   session.positions[position] = { userId, username, character: null };
   await editScrimMessage(sessionId, session, interaction.client);
   await interaction.reply({
@@ -306,27 +244,8 @@ async function scrimPosition(interaction) {
 async function scrimRarity(interaction) {
   const [, sessionId, position] = interaction.customId.split(":");
   const rarity = interaction.values[0];
-  const session = activeScrims.get(sessionId);
-  if (!session) return interaction.update({ content: "❌ السكريم لم يعد موجوداً.", components: [] });
-  if (session.positions[position]?.userId !== interaction.user.id)
-    return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
-
-  const availableChars = (RARITY_CHARACTERS[rarity] ?? []).filter((character) =>
-    position === "GK" || !POSITIONS.some((pos) =>
-      pos !== position &&
-      session.positions[pos]?.character?.toLowerCase() === character.toLowerCase()
-    )
-  );
-  if (!availableChars.length)
-    return interaction.update({
-      content: `❌ كل شخصيات فئة **${rarity}** مستخدمة بالفعل في السكريم. اختر فئة أخرى:`,
-      components: [raritySelect("scrim", sessionId, position)],
-    });
-
-  await interaction.update({
-    content: `فئة **${rarity}** — اختر شخصيتك:`,
-    components: [charSelect("scrim", sessionId, position, rarity, availableChars)],
-  });
+  if (!activeScrims.get(sessionId)) return interaction.update({ content: "❌ السكريم لم يعد موجوداً.", components: [] });
+  await interaction.update({ content: `فئة **${rarity}** — اختر شخصيتك:`, components: [charSelect("scrim", sessionId, position, rarity)] });
 }
 
 async function scrimChar(interaction) {
@@ -335,18 +254,8 @@ async function scrimChar(interaction) {
   if (!session) return interaction.update({ content: "❌ السكريم لم يعد موجوداً.", components: [] });
   if (session.positions[position]?.userId !== interaction.user.id)
     return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
-  const character = interaction.values[0];
-  const alreadyTaken = position !== "GK" && POSITIONS.some((pos) =>
-    pos !== position &&
-    session.positions[pos]?.character?.toLowerCase() === character.toLowerCase()
-  );
-  if (alreadyTaken)
-    return interaction.update({
-      content: `❌ الشخصية **${character}** مستخدمة بالفعل في السكريم. اختر شخصية أخرى:`,
-      components: [raritySelect("scrim", sessionId, position)],
-    });
-  session.positions[position].character = character;
-  await interaction.update({ content: `✅ اخترت **${character}** في مركز **${position}**!`, components: [] });
+  session.positions[position].character = interaction.values[0];
+  await interaction.update({ content: `✅ اخترت **${interaction.values[0]}** في مركز **${position}**!`, components: [] });
   await editScrimMessage(sessionId, session, interaction.client);
 }
 
@@ -399,36 +308,27 @@ async function scrimChangeChar(interaction) {
 //  Shared team content/components (Inhouse & Tryout)
 // ═══════════════════════════════════════════
 
-function buildTeamContent(session, title) {
-  const lines = [`# ${title}`, ""];
-  for (const team of TEAMS) {
-    lines.push(`# ${team}`);
-    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
-      const e = session.teams[team][pos];
-      const player = e
-        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
-        : "";
-      lines.push(`> **${pos} :**${player}`);
-    }
-    lines.push("");
-  }
-  return lines.join("\n");
-}
-
-function buildInhouseContent(session) {
-  const lines = ["# INHOUSE", ""];
-  for (const team of TEAMS) {
-    lines.push(`# ${team}`);
-    for (const pos of ["CF", "LW", "RW", "CM", "GK"]) {
-      const e = session.teams[team][pos];
-      const player = e
-        ? ` <@${e.userId}>${e.character ? ` (${e.character})` : " (Choosing character...)"}`
-        : "";
-      lines.push(`> **${pos} :**${player}`);
-    }
-    lines.push("");
-  }
-  return lines.join("\n");
+function buildTeamEmbed(session, title) {
+  const teamFields = TEAMS.map((team) => {
+    const players = POSITIONS
+      .map((pos) => formatPosition(pos, session.teams[team][pos]))
+      .join("\n");
+    return {
+      name: team === "HOME" ? "🔵 HOME" : "🟣 AWAY",
+      value: players,
+      inline: true,
+    };
+  });
+  const playerCount = TEAMS.reduce(
+    (total, team) => total + POSITIONS.filter((pos) => session.teams[team][pos] !== null).length,
+    0,
+  );
+  return new EmbedBuilder()
+    .setColor(title.toUpperCase().includes("TRYOUT") ? 0x7c3aed : 0x2563eb)
+    .setTitle(title.toUpperCase().includes("TRYOUT") ? "🎯 TRYOUT" : "🏆 INHOUSE")
+    .setDescription("اختر مركزك من القائمة، وسيتم توزيعك عشوائياً على HOME أو AWAY.")
+    .addFields(teamFields)
+    .setFooter({ text: `Players: ${playerCount}/10 · 5 لاعبين لكل فريق` });
 }
 
 function buildTeamComponents(prefix, sessionId) {
@@ -471,16 +371,13 @@ async function teamPosition(interaction, store, editFn, title, prefix) {
   if (!session) return interaction.reply({ content: "❌ الجلسة لم تعد موجودة.", flags: MessageFlags.Ephemeral });
   const position = interaction.values[0];
   const { id: userId, username } = interaction.user;
-  const freeTeams = TEAMS.filter((team) =>
-    session.teams[team][position] === null ||
-    session.teams[team][position]?.userId === userId
-  );
+  for (const t of TEAMS)
+    for (const p of POSITIONS)
+      if (session.teams[t][p]?.userId === userId) session.teams[t][p] = null;
+  const freeTeams = TEAMS.filter((t) => session.teams[t][position] === null);
   if (!freeTeams.length)
     return interaction.reply({ content: `❌ مركز **${position}** ممتلئ في كلا الفريقين!`, flags: MessageFlags.Ephemeral });
   const assignedTeam = freeTeams[Math.floor(Math.random() * freeTeams.length)];
-  for (const team of TEAMS)
-    for (const pos of POSITIONS)
-      if (session.teams[team][pos]?.userId === userId) session.teams[team][pos] = null;
   session.teams[assignedTeam][position] = { userId, username, character: null };
   await editFn(sessionId, session, interaction.client);
   await interaction.reply({
@@ -500,7 +397,7 @@ async function teamRarity(interaction, store, prefix) {
     return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
 
   const availableChars = (RARITY_CHARACTERS[rarity] ?? []).filter((character) =>
-    position === "GK" || !POSITIONS.some((pos) =>
+    !POSITIONS.some((pos) =>
       pos !== position &&
       session.teams[found.team][pos]?.character?.toLowerCase() === character.toLowerCase()
     )
@@ -524,7 +421,7 @@ async function teamChar(interaction, store, editFn, title, prefix) {
   const found = findPlayerInTeams(session, interaction.user.id);
   if (!found || found.position !== position) return interaction.update({ content: "❌ هذا المركز ليس لك!", components: [] });
   const character = interaction.values[0];
-  const alreadyTaken = position !== "GK" && POSITIONS.some((pos) =>
+  const alreadyTaken = POSITIONS.some((pos) =>
     pos !== position &&
     session.teams[found.team][pos]?.character?.toLowerCase() === character.toLowerCase()
   );
@@ -592,25 +489,29 @@ async function teamChangeChar(interaction, store, prefix) {
 // ═══════════════════════════════════════════
 
 async function editInhouseMessage(sessionId, session, client) {
-  enqueueSessionEdit(sessionId, session, client, activeInhouses, (currentSession) => ({
-    content: buildInhouseContent(currentSession),
-    embeds: [],
-    components: buildTeamComponents("inhouse", sessionId),
-  }));
+  try {
+    const ch = await client.channels.fetch(session.channelId);
+    if (ch?.isTextBased()) {
+      const msg = await ch.messages.fetch(sessionId);
+      await msg.edit({ content: "", embeds: [buildTeamEmbed(session, "INHOUSE")], components: buildTeamComponents("inhouse", sessionId) });
+    }
+  } catch { }
 }
 
 async function expireInhouse(sessionId, client) {
   const s = activeInhouses.get(sessionId);
   if (!s) return;
   clearTimer(s);
-  cancelSessionEdit(sessionId);
   activeInhouses.delete(sessionId);
   channelInhouse.delete(s.channelId);
   try {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: msg.content + "\n\n**In-house has ended**", components: [] });
+      const endedEmbed = msg.embeds[0]
+        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى الإن-هاوس" })
+        : buildTeamEmbed(s, "INHOUSE").setFooter({ text: "انتهى الإن-هاوس" });
+      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
     }
   } catch { }
 }
@@ -641,7 +542,7 @@ async function handleInhouseCommand(interaction) {
   if (existingId) await expireInhouse(existingId, interaction.client);
   channelInhouse.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: buildInhouseContent(session), embeds: [], components: buildTeamComponents("inhouse", messageId) });
+  await interaction.editReply({ content: "", embeds: [buildTeamEmbed(session, "INHOUSE")], components: buildTeamComponents("inhouse", messageId) });
 }
 
 async function handleInhouseInteraction(interaction) {
@@ -660,25 +561,29 @@ async function handleInhouseInteraction(interaction) {
 // ═══════════════════════════════════════════
 
 async function editTryoutMessage(sessionId, session, client) {
-  enqueueSessionEdit(sessionId, session, client, activeTryouts, (currentSession) => ({
-    content: buildTeamContent(currentSession, "TRYOUT!"),
-    embeds: [],
-    components: buildTeamComponents("tryout", sessionId),
-  }));
+  try {
+    const ch = await client.channels.fetch(session.channelId);
+    if (ch?.isTextBased()) {
+      const msg = await ch.messages.fetch(sessionId);
+      await msg.edit({ content: "", embeds: [buildTeamEmbed(session, "TRYOUT")], components: buildTeamComponents("tryout", sessionId) });
+    }
+  } catch { }
 }
 
 async function expireTryout(sessionId, client) {
   const s = activeTryouts.get(sessionId);
   if (!s) return;
   clearTimer(s);
-  cancelSessionEdit(sessionId);
   activeTryouts.delete(sessionId);
   channelTryout.delete(s.channelId);
   try {
     const ch = await client.channels.fetch(s.channelId);
     if (ch?.isTextBased()) {
       const msg = await ch.messages.fetch(sessionId);
-      await msg.edit({ content: msg.content + "\n\n**Tryout has ended**", components: [] });
+      const endedEmbed = msg.embeds[0]
+        ? EmbedBuilder.from(msg.embeds[0]).setFooter({ text: "انتهى الـ Tryout" })
+        : buildTeamEmbed(s, "TRYOUT").setFooter({ text: "انتهى الـ Tryout" });
+      await msg.edit({ content: "", embeds: [endedEmbed], components: [] });
     }
   } catch { }
 }
@@ -709,7 +614,7 @@ async function handleTryoutCommand(interaction) {
   if (existingId) await expireTryout(existingId, interaction.client);
   channelTryout.set(interaction.channelId, messageId);
 
-  await interaction.editReply({ content: buildTeamContent(session, "TRYOUT!"), embeds: [], components: buildTeamComponents("tryout", messageId) });
+  await interaction.editReply({ content: "", embeds: [buildTeamEmbed(session, "TRYOUT")], components: buildTeamComponents("tryout", messageId) });
 }
 
 async function handleTryoutInteraction(interaction) {
